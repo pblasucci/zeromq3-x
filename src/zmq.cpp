@@ -70,7 +70,7 @@ struct iovec {
 #include <stdlib.h>
 #include <new>
 
-#include "device.hpp"
+#include "proxy.hpp"
 #include "socket_base.hpp"
 #include "stdint.hpp"
 #include "config.hpp"
@@ -169,21 +169,24 @@ int zmq_ctx_destroy (void *ctx_)
         errno = EFAULT;
         return -1;
     }
-    
+
     int rc = ((zmq::ctx_t*) ctx_)->terminate ();
     int en = errno;
 
+    //  Shut down only if termination was not interrupted by a signal.
+    if (!rc || en != EINTR) {
 #ifdef ZMQ_HAVE_WINDOWS
-    //  On Windows, uninitialise socket layer.
-    rc = WSACleanup ();
-    wsa_assert (rc != SOCKET_ERROR);
+        //  On Windows, uninitialise socket layer.
+        rc = WSACleanup ();
+        wsa_assert (rc != SOCKET_ERROR);
 #endif
 
 #if defined ZMQ_HAVE_OPENPGM
-    //  Shut down the OpenPGM library.
-    if (pgm_shutdown () != TRUE)
-        zmq_assert (false);
+        //  Shut down the OpenPGM library.
+        if (pgm_shutdown () != TRUE)
+            zmq_assert (false);
 #endif
+    }
 
     errno = en;
     return rc;
@@ -205,15 +208,6 @@ int zmq_ctx_get (void *ctx_, int option_)
         return -1;
     }
     return ((zmq::ctx_t*) ctx_)->get (option_);
-}
-
-int zmq_ctx_set_monitor (void *ctx_, zmq_monitor_fn *monitor_)
-{
-    if (!ctx_ || !((zmq::ctx_t*) ctx_)->check_tag ()) {
-        errno = EFAULT;
-        return -1;
-    }
-    return ((zmq::ctx_t*) ctx_)->monitor (monitor_);
 }
 
 //  Stable/legacy context API
@@ -278,6 +272,17 @@ int zmq_getsockopt (void *s_, int option_, void *optval_, size_t *optvallen_)
     }
     zmq::socket_base_t *s = (zmq::socket_base_t *) s_;
     int result = s->getsockopt (option_, optval_, optvallen_);
+    return result;
+}
+
+int zmq_socket_monitor (void *s_, const char *addr_, int events_)
+{
+    if (!s_ || !((zmq::socket_base_t*) s_)->check_tag ()) {
+        errno = ENOTSOCK;
+        return -1;
+    }
+    zmq::socket_base_t *s = (zmq::socket_base_t *) s_;
+    int result = s->monitor (addr_, events_);
     return result;
 }
 
@@ -599,7 +604,7 @@ int zmq_msg_get (zmq_msg_t *msg_, int option_)
     }
 }
 
-int zmq_msg_set (zmq_msg_t *msg_, int option_, int optval_)
+int zmq_msg_set (zmq_msg_t *, int, int)
 {
     //  No options supported at present
     errno = EINVAL;
@@ -959,21 +964,27 @@ int zmq_poll (zmq_pollitem_t *items_, int nitems_, long timeout_)
 #undef ZMQ_POLL_BASED_ON_POLL
 #endif
 
-int zmq_device (int device_, void *insocket_, void *outsocket_)
+//  The proxy functionality
+
+int zmq_proxy (void *frontend_, void *backend_, void *control_)
 {
-    if (!insocket_ || !outsocket_) {
+    if (!frontend_ || !backend_) {
         errno = EFAULT;
         return -1;
     }
+    return zmq::proxy (
+        (zmq::socket_base_t*) frontend_,
+        (zmq::socket_base_t*) backend_,
+        (zmq::socket_base_t*) control_);
+}
 
-    if (device_ != ZMQ_FORWARDER && device_ != ZMQ_QUEUE &&
-          device_ != ZMQ_STREAMER) {
-       errno = EINVAL;
-       return -1;
-    }
+//  The deprecated device functionality
 
-    return zmq::device ((zmq::socket_base_t*) insocket_,
-        (zmq::socket_base_t*) outsocket_);
+int zmq_device (int type, void *frontend_, void *backend_)
+{
+    return zmq::proxy (
+        (zmq::socket_base_t*) frontend_,
+        (zmq::socket_base_t*) backend_, NULL);
 }
 
 ////////////////////////////////////////////////////////////////////////////////

@@ -29,6 +29,7 @@
 #include "random.hpp"
 #include "err.hpp"
 #include "ip.hpp"
+#include "tcp.hpp"
 #include "address.hpp"
 #include "tcp_address.hpp"
 #include "session_base.hpp"
@@ -51,38 +52,54 @@
 
 zmq::tcp_connecter_t::tcp_connecter_t (class io_thread_t *io_thread_,
       class session_base_t *session_, const options_t &options_,
-      const address_t *addr_, bool wait_) :
+      const address_t *addr_, bool delayed_start_) :
     own_t (io_thread_, options_),
     io_object_t (io_thread_),
     addr (addr_),
     s (retired_fd),
     handle_valid (false),
-    wait (wait_),
+    delayed_start (delayed_start_),
+    timer_started (false),
     session (session_),
     current_reconnect_ivl(options.reconnect_ivl)
 {
     zmq_assert (addr);
     zmq_assert (addr->protocol == "tcp");
     addr->to_string (endpoint);
+    socket = session-> get_socket();
 }
 
 zmq::tcp_connecter_t::~tcp_connecter_t ()
 {
-    if (wait)
-        cancel_timer (reconnect_timer_id);
-    if (handle_valid)
-        rm_fd (handle);
-
-    if (s != retired_fd)
-        close ();
+    zmq_assert (!timer_started);
+    zmq_assert (!handle_valid);
+    zmq_assert (s == retired_fd);
 }
 
 void zmq::tcp_connecter_t::process_plug ()
 {
-    if (wait)
-        add_reconnect_timer();
+    if (delayed_start)
+        add_reconnect_timer ();
     else
         start_connecting ();
+}
+
+void zmq::tcp_connecter_t::process_term (int linger_)
+{
+    if (timer_started) {
+        cancel_timer (reconnect_timer_id);
+        timer_started = false;
+    }
+
+    if (handle_valid) {
+        rm_fd (handle);
+        handle_valid = false;
+    }
+
+    if (s != retired_fd)
+        close ();
+
+    own_t::process_term (linger_);
 }
 
 void zmq::tcp_connecter_t::in_event ()
@@ -102,7 +119,6 @@ void zmq::tcp_connecter_t::out_event ()
     //  Handle the error condition by attempt to reconnect.
     if (fd == retired_fd) {
         close ();
-        wait = true;
         add_reconnect_timer();
         return;
     }
@@ -120,13 +136,13 @@ void zmq::tcp_connecter_t::out_event ()
     //  Shut the connecter down.
     terminate ();
 
-    session->monitor_event (ZMQ_EVENT_CONNECTED, endpoint.c_str(), fd);
+    socket->event_connected (endpoint.c_str(), fd);
 }
 
 void zmq::tcp_connecter_t::timer_event (int id_)
 {
     zmq_assert (id_ == reconnect_timer_id);
-    wait = false;
+    timer_started = false;
     start_connecting ();
 }
 
@@ -140,7 +156,6 @@ void zmq::tcp_connecter_t::start_connecting ()
         handle = add_fd (s);
         handle_valid = true;
         out_event ();
-        return;
     }
 
     //  Connection establishment may be delayed. Poll for its completion.
@@ -148,21 +163,23 @@ void zmq::tcp_connecter_t::start_connecting ()
         handle = add_fd (s);
         handle_valid = true;
         set_pollout (handle);
-        session->monitor_event (ZMQ_EVENT_CONNECT_DELAYED, endpoint.c_str(), zmq_errno());
-        return;
+        socket->event_connect_delayed (endpoint.c_str(), zmq_errno());
     }
 
     //  Handle any other error condition by eventual reconnect.
-    close ();
-    wait = true;
-    add_reconnect_timer();
+    else {
+        if (s != retired_fd)
+            close ();
+        add_reconnect_timer ();
+    }
 }
 
 void zmq::tcp_connecter_t::add_reconnect_timer()
 {
     int rc_ivl = get_new_reconnect_ivl();
     add_timer (rc_ivl, reconnect_timer_id);
-    session->monitor_event (ZMQ_EVENT_CONNECT_RETRIED, endpoint.c_str(), rc_ivl);
+    socket->event_connect_retried (endpoint.c_str(), rc_ivl);
+    timer_started = true;
 }
 
 int zmq::tcp_connecter_t::get_new_reconnect_ivl ()
@@ -282,15 +299,11 @@ void zmq::tcp_connecter_t::close ()
     zmq_assert (s != retired_fd);
 #ifdef ZMQ_HAVE_WINDOWS
     int rc = closesocket (s);
-    if (unlikely (rc != SOCKET_ERROR))
-        session->monitor_event (ZMQ_EVENT_CLOSE_FAILED, endpoint.c_str(), zmq_errno());
     wsa_assert (rc != SOCKET_ERROR);
 #else
     int rc = ::close (s);
-    if (unlikely (rc == 0))
-        session->monitor_event (ZMQ_EVENT_CLOSE_FAILED, endpoint.c_str(), zmq_errno());
     errno_assert (rc == 0);
 #endif
-    session->monitor_event (ZMQ_EVENT_CLOSED, endpoint.c_str(), s);
+    socket->event_closed (endpoint.c_str(), s);
     s = retired_fd;
 }

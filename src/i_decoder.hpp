@@ -1,6 +1,6 @@
 /*
-    Copyright (c) 2007-2011 iMatix Corporation
-    Copyright (c) 2007-2011 Other contributors as noted in the AUTHORS file
+    Copyright (c) 2007-2012 iMatix Corporation
+    Copyright (c) 2007-2012 Other contributors as noted in the AUTHORS file
 
     This file is part of 0MQ.
 
@@ -18,14 +18,31 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-#ifndef __ZMQ_DEVICE_HPP_INCLUDED__
-#define __ZMQ_DEVICE_HPP_INCLUDED__
+#ifndef __ZMQ_I_DECODER_HPP_INCLUDED__
+#define __ZMQ_I_DECODER_HPP_INCLUDED__
+
+#include "stdint.hpp"
 
 namespace zmq
 {
 
-    int device (class socket_base_t *insocket_,
-        class socket_base_t *outsocket_);
+    class i_msg_sink;
+
+    //  Interface to be implemented by message decoder.
+
+    struct i_decoder
+    {
+        virtual ~i_decoder () {}
+
+        virtual void set_msg_sink (i_msg_sink *msg_sink_) = 0;
+
+        virtual void get_buffer (unsigned char **data_, size_t *size_) = 0;
+
+        virtual size_t process_buffer (unsigned char *data_, size_t size_) = 0;
+
+        virtual bool stalled () const = 0;
+
+    };
 
 }
 

@@ -65,7 +65,7 @@ zmq::pgm_socket_t::pgm_socket_t (bool receiver_, const options_t &options_) :
 //       link-local;224.250.0.1,224.250.0.2;224.250.0.3:8000
 //       ;[fe80::1%en0]:7500
 int zmq::pgm_socket_t::init_address (const char *network_,
-    struct pgm_addrinfo_t **addr, uint16_t *port_number)
+    struct pgm_addrinfo_t **res, uint16_t *port_number)
 {
     //  Parse port number, start from end for IPv6
     const char *port_delim = strrchr (network_, ':');
@@ -89,7 +89,7 @@ int zmq::pgm_socket_t::init_address (const char *network_,
 
     memset (&hints, 0, sizeof (hints));
     hints.ai_family = AF_UNSPEC;
-    if (!pgm_getaddrinfo (network, NULL, addr, &pgm_error)) {
+    if (!pgm_getaddrinfo (network, NULL, res, &pgm_error)) {
 
         //  Invalid parameters don't set pgm_error_t.
         zmq_assert (pgm_error != NULL);

@@ -59,8 +59,8 @@ extern "C" {
 
 /*  Version macros for compile-time API version detection                     */
 #define ZMQ_VERSION_MAJOR 3
-#define ZMQ_VERSION_MINOR 2
-#define ZMQ_VERSION_PATCH 1
+#define ZMQ_VERSION_MINOR 3
+#define ZMQ_VERSION_PATCH 0
 
 #define ZMQ_MAKE_VERSION(major, minor, patch) \
     ((major) * 10000 + (minor) * 100 + (patch))
@@ -176,7 +176,7 @@ ZMQ_EXPORT int zmq_term (void *context);
 /*  0MQ message definition.                                                   */
 /******************************************************************************/
 
-typedef struct {unsigned char _ [32];} zmq_msg_t;
+typedef struct zmq_msg_t {unsigned char _ [32];} zmq_msg_t;
 
 typedef void (zmq_free_fn) (void *data, void *hint);
 
@@ -248,6 +248,7 @@ ZMQ_EXPORT int zmq_msg_set (zmq_msg_t *msg, int option, int optval);
 #define ZMQ_TCP_KEEPALIVE_IDLE 36
 #define ZMQ_TCP_KEEPALIVE_INTVL 37
 #define ZMQ_TCP_ACCEPT_FILTER 38
+#define ZMQ_DELAY_ATTACH_ON_CONNECT 39
 
 /*  Message options                                                           */
 #define ZMQ_MORE 1
@@ -255,6 +256,8 @@ ZMQ_EXPORT int zmq_msg_set (zmq_msg_t *msg, int option, int optval);
 /*  Send/recv options.                                                        */
 #define ZMQ_DONTWAIT 1
 #define ZMQ_SNDMORE 2
+/*  Deprecated aliases                                                        */
+#define ZMQ_NOBLOCK ZMQ_DONTWAIT
 
 /******************************************************************************/
 /*  0MQ socket events and monitoring                                          */
@@ -275,8 +278,16 @@ ZMQ_EXPORT int zmq_msg_set (zmq_msg_t *msg, int option, int optval);
 #define ZMQ_EVENT_CLOSE_FAILED 256
 #define ZMQ_EVENT_DISCONNECTED 512
 
+#define ZMQ_EVENT_ALL ( ZMQ_EVENT_CONNECTED | ZMQ_EVENT_CONNECT_DELAYED | \
+                        ZMQ_EVENT_CONNECT_RETRIED | ZMQ_EVENT_LISTENING | \
+                        ZMQ_EVENT_BIND_FAILED | ZMQ_EVENT_ACCEPTED | \
+                        ZMQ_EVENT_ACCEPT_FAILED | ZMQ_EVENT_CLOSED | \
+                        ZMQ_EVENT_CLOSE_FAILED | ZMQ_EVENT_DISCONNECTED )
+
 /*  Socket event data (union member per event)                                */
-typedef union {
+typedef struct {
+    int event;
+    union {
     struct {
         char *addr;
         int fd;
@@ -317,12 +328,8 @@ typedef union {
         char *addr;
         int fd;
     } disconnected;
-} zmq_event_data_t;
-
-/*  Callback template for socket state changes                                */
-typedef void (zmq_monitor_fn) (void *s, int event, zmq_event_data_t *data);
-
-ZMQ_EXPORT int zmq_ctx_set_monitor (void *context, zmq_monitor_fn *monitor);
+    } data;
+} zmq_event_t;
 
 ZMQ_EXPORT void *zmq_socket (void *, int type);
 ZMQ_EXPORT int zmq_close (void *s);
@@ -336,6 +343,7 @@ ZMQ_EXPORT int zmq_unbind (void *s, const char *addr);
 ZMQ_EXPORT int zmq_disconnect (void *s, const char *addr);
 ZMQ_EXPORT int zmq_send (void *s, const void *buf, size_t len, int flags);
 ZMQ_EXPORT int zmq_recv (void *s, void *buf, size_t len, int flags);
+ZMQ_EXPORT int zmq_socket_monitor (void *s, const char *addr, int events);
 
 ZMQ_EXPORT int zmq_sendmsg (void *s, zmq_msg_t *msg, int flags);
 ZMQ_EXPORT int zmq_recvmsg (void *s, zmq_msg_t *msg, int flags);
@@ -368,15 +376,16 @@ typedef struct
 
 ZMQ_EXPORT int zmq_poll (zmq_pollitem_t *items, int nitems, long timeout);
 
-/******************************************************************************/
-/*  Devices - Experimental.                                                   */
-/******************************************************************************/
+//  Built-in message proxy (3-way)
 
+ZMQ_EXPORT int zmq_proxy (void *frontend, void *backend, void *capture);
+
+//  Deprecated aliases
 #define ZMQ_STREAMER 1
 #define ZMQ_FORWARDER 2
 #define ZMQ_QUEUE 3
-
-ZMQ_EXPORT int zmq_device (int device, void *insocket, void* outsocket);
+//  Deprecated method
+ZMQ_EXPORT int zmq_device (int type, void *frontend, void *backend);
 
 #undef ZMQ_EXPORT
 

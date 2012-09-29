@@ -40,7 +40,9 @@ tests/test_invalid_rep
 tests/test_msg_flags
 tests/test_ts_context
 tests/test_connect_resolve
+tests/test_connect_delay
 tests/test_term_endpoint
+tests/test_router_behavior
 src/platform.hpp*
 src/stamp-h1
 perf/local_lat

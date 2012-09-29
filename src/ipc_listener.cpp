@@ -52,8 +52,7 @@ zmq::ipc_listener_t::ipc_listener_t (io_thread_t *io_thread_,
 
 zmq::ipc_listener_t::~ipc_listener_t ()
 {
-    if (s != retired_fd)
-        close ();
+    zmq_assert (s == retired_fd);
 }
 
 void zmq::ipc_listener_t::process_plug ()
@@ -77,7 +76,7 @@ void zmq::ipc_listener_t::in_event ()
     //  If connection was reset by the peer in the meantime, just ignore it.
     //  TODO: Handle specific errors like ENFILE/EMFILE etc.
     if (fd == retired_fd) {
-        socket->monitor_event (ZMQ_EVENT_ACCEPT_FAILED, endpoint.c_str(), zmq_errno());
+        socket->event_accept_failed (endpoint.c_str(), zmq_errno());
         return;
     }
 
@@ -97,7 +96,7 @@ void zmq::ipc_listener_t::in_event ()
     session->inc_seqnum ();
     launch_child (session);
     send_attach (session, engine, false);
-    socket->monitor_event (ZMQ_EVENT_ACCEPTED, endpoint.c_str(), fd);
+    socket->event_accepted (endpoint.c_str(), fd);
 }
 
 int zmq::ipc_listener_t::get_address (std::string &addr_)
@@ -146,7 +145,7 @@ int zmq::ipc_listener_t::set_address (const char *addr_)
     //  Bind the socket to the file path.
     rc = bind (s, address.addr (), address.addrlen ());
     if (rc != 0)
-        return -1;
+        goto error;
 
     filename.assign(addr_);
     has_file = true;
@@ -154,33 +153,37 @@ int zmq::ipc_listener_t::set_address (const char *addr_)
     //  Listen for incomming connections.
     rc = listen (s, options.backlog);
     if (rc != 0)
-        return -1;
+        goto error;
 
-    socket->monitor_event (ZMQ_EVENT_LISTENING, endpoint.c_str(), s);
+    socket->event_listening (endpoint.c_str(), s);
     return 0;
+
+error:
+    int err = errno;
+    close ();
+    errno = err;
+    return -1;
 }
 
 int zmq::ipc_listener_t::close ()
 {
     zmq_assert (s != retired_fd);
     int rc = ::close (s);
-    if (rc != 0) {
-        socket->monitor_event (ZMQ_EVENT_CLOSE_FAILED, endpoint.c_str(), zmq_errno());
-        return -1;
-    }
+    errno_assert (rc == 0);
+
+    s = retired_fd;
 
     //  If there's an underlying UNIX domain socket, get rid of the file it
     //  is associated with.
     if (has_file && !filename.empty ()) {
         rc = ::unlink(filename.c_str ());
         if (rc != 0) {
-            socket->monitor_event (ZMQ_EVENT_CLOSE_FAILED, endpoint.c_str(), zmq_errno());
+            socket->event_close_failed (endpoint.c_str(), zmq_errno());
             return -1;
         }
     }
 
-    socket->monitor_event (ZMQ_EVENT_CLOSED, endpoint.c_str(), s);
-    s = retired_fd;
+    socket->event_closed (endpoint.c_str(), s);
     return 0;
 }
 

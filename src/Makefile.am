@@ -16,7 +16,6 @@ libzmq_la_SOURCES = \
     config.hpp \
     ctx.hpp \
     decoder.hpp \
-    device.hpp \
     devpoll.hpp \
     dist.hpp \
     encoder.hpp \
@@ -51,6 +50,7 @@ libzmq_la_SOURCES = \
     poller.hpp \
     poller_base.hpp \
     pair.hpp \
+    proxy.hpp \
     pub.hpp \
     pull.hpp \
     push.hpp \
@@ -65,6 +65,7 @@ libzmq_la_SOURCES = \
     stdint.hpp \
     stream_engine.hpp \
     sub.hpp \
+    tcp.hpp \
     tcp_address.hpp \
     tcp_connecter.hpp \
     tcp_listener.hpp \
@@ -82,7 +83,6 @@ libzmq_la_SOURCES = \
     clock.cpp \
     ctx.cpp \
     decoder.cpp \
-    device.cpp \
     devpoll.cpp \
     dist.cpp \
     encoder.cpp \
@@ -112,6 +112,7 @@ libzmq_la_SOURCES = \
     poller_base.cpp \
     pull.cpp \
     push.cpp \
+    proxy.cpp \
     reaper.cpp \
     pub.cpp \
     random.cpp \
@@ -123,6 +124,7 @@ libzmq_la_SOURCES = \
     socket_base.cpp \
     stream_engine.cpp \
     sub.cpp \
+    tcp.cpp \
     tcp_address.cpp \
     tcp_connecter.cpp \
     tcp_listener.cpp \
@@ -131,6 +133,8 @@ libzmq_la_SOURCES = \
     xpub.cpp \
     router.cpp \
     dealer.cpp \
+    v1_decoder.cpp \
+    v1_encoder.cpp \
     xsub.cpp \
     zmq.cpp \
     zmq_utils.cpp

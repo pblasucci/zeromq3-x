@@ -31,6 +31,7 @@
 #include "config.hpp"
 #include "err.hpp"
 #include "ip.hpp"
+#include "tcp.hpp"
 #include "socket_base.hpp"
 
 #ifdef ZMQ_HAVE_WINDOWS
@@ -60,8 +61,7 @@ zmq::tcp_listener_t::tcp_listener_t (io_thread_t *io_thread_,
 
 zmq::tcp_listener_t::~tcp_listener_t ()
 {
-    if (s != retired_fd)
-        close ();
+    zmq_assert (s == retired_fd);
 }
 
 void zmq::tcp_listener_t::process_plug ()
@@ -85,7 +85,7 @@ void zmq::tcp_listener_t::in_event ()
     //  If connection was reset by the peer in the meantime, just ignore it.
     //  TODO: Handle specific errors like ENFILE/EMFILE etc.
     if (fd == retired_fd) {
-        socket->monitor_event (ZMQ_EVENT_ACCEPT_FAILED, endpoint.c_str(), zmq_errno());
+        socket->event_accept_failed (endpoint.c_str(), zmq_errno());
         return;
     }
 
@@ -108,7 +108,7 @@ void zmq::tcp_listener_t::in_event ()
     session->inc_seqnum ();
     launch_child (session);
     send_attach (session, engine, false);
-    socket->monitor_event (ZMQ_EVENT_ACCEPTED, endpoint.c_str(), fd);
+    socket->event_accepted (endpoint.c_str(), fd);
 }
 
 void zmq::tcp_listener_t::close ()
@@ -116,16 +116,12 @@ void zmq::tcp_listener_t::close ()
     zmq_assert (s != retired_fd);
 #ifdef ZMQ_HAVE_WINDOWS
     int rc = closesocket (s);
-    if (unlikely (rc != SOCKET_ERROR))
-        socket->monitor_event (ZMQ_EVENT_CLOSE_FAILED, endpoint.c_str(), zmq_errno());
     wsa_assert (rc != SOCKET_ERROR);
 #else
     int rc = ::close (s);
-    if (unlikely (rc == 0))
-        socket->monitor_event (ZMQ_EVENT_CLOSE_FAILED, endpoint.c_str(), zmq_errno());
     errno_assert (rc == 0);
 #endif
-    socket->monitor_event (ZMQ_EVENT_CLOSED, endpoint.c_str(), s);
+    socket->event_closed (endpoint.c_str(), s);
     s = retired_fd;
 }
 
@@ -208,11 +204,11 @@ int zmq::tcp_listener_t::set_address (const char *addr_)
 #ifdef ZMQ_HAVE_WINDOWS
     if (rc == SOCKET_ERROR) {
         errno = wsa_error_to_errno (WSAGetLastError ());
-        return -1;
+        goto error;
     }
 #else
     if (rc != 0)
-        return -1;
+        goto error;
 #endif
 
     //  Listen for incomming connections.
@@ -220,15 +216,21 @@ int zmq::tcp_listener_t::set_address (const char *addr_)
 #ifdef ZMQ_HAVE_WINDOWS
     if (rc == SOCKET_ERROR) {
         errno = wsa_error_to_errno (WSAGetLastError ());
-        return -1;
+        goto error;
     }
 #else
     if (rc != 0)
-        return -1;
+        goto error;
 #endif
 
-    socket->monitor_event (ZMQ_EVENT_LISTENING, endpoint.c_str(), s);
+    socket->event_listening (endpoint.c_str(), s);
     return 0;
+
+error:
+    int err = errno;
+    close ();
+    errno = err;
+    return -1;
 }
 
 zmq::fd_t zmq::tcp_listener_t::accept ()
@@ -236,7 +238,7 @@ zmq::fd_t zmq::tcp_listener_t::accept ()
     //  Accept one connection and deal with different failure modes.
     zmq_assert (s != retired_fd);
 
-    struct sockaddr_storage ss = {0};
+    struct sockaddr_storage ss = {};
 #ifdef ZMQ_HAVE_HPUX
     int ss_len = sizeof (ss);
 #else

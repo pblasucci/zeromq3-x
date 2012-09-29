@@ -130,13 +130,16 @@ zmq::socket_base_t::socket_base_t (ctx_t *parent_, uint32_t tid_, int sid_) :
     destroyed (false),
     last_tsc (0),
     ticks (0),
-    rcvmore (false)
+    rcvmore (false),
+    monitor_socket (NULL),
+    monitor_events (0)
 {
     options.socket_id = sid_;
 }
 
 zmq::socket_base_t::~socket_base_t ()
 {
+    stop_monitor ();
     zmq_assert (destroyed);
 }
 
@@ -354,7 +357,7 @@ int zmq::socket_base_t::bind (const char *addr_)
         int rc = listener->set_address (address.c_str ());
         if (rc != 0) {
             delete listener;
-            monitor_event (ZMQ_EVENT_BIND_FAILED, addr_, zmq_errno());
+            event_bind_failed (addr_, zmq_errno());
             return -1;
         }
 
@@ -373,7 +376,7 @@ int zmq::socket_base_t::bind (const char *addr_)
         int rc = listener->set_address (address.c_str ());
         if (rc != 0) {
             delete listener;
-            monitor_event (ZMQ_EVENT_BIND_FAILED, addr_, zmq_errno());
+            event_bind_failed (addr_, zmq_errno());
             return -1;
         }
 
@@ -448,7 +451,7 @@ int zmq::socket_base_t::connect (const char *addr_)
         attach_pipe (pipes [0]);
 
         //  If required, send the identity of the local socket to the peer.
-        if (options.send_identity) {
+        if (peer.options.recv_identity) {
             msg_t id;
             rc = id.init_size (options.identity_size);
             errno_assert (rc == 0);
@@ -460,7 +463,7 @@ int zmq::socket_base_t::connect (const char *addr_)
         }
 
         //  If required, send the identity of the peer to the local socket.
-        if (peer.options.send_identity) {
+        if (options.recv_identity) {
             msg_t id;
             rc = id.init_size (peer.options.identity_size);
             errno_assert (rc == 0);
@@ -530,27 +533,27 @@ int zmq::socket_base_t::connect (const char *addr_)
         options, paddr);
     errno_assert (session);
 
-    //  Create a bi-directional pipe.
-    object_t *parents [2] = {this, session};
-    pipe_t *pipes [2] = {NULL, NULL};
-    int hwms [2] = {options.sndhwm, options.rcvhwm};
-    bool delays [2] = {options.delay_on_disconnect, options.delay_on_close};
-    rc = pipepair (parents, pipes, hwms, delays);
-    errno_assert (rc == 0);
-
     //  PGM does not support subscription forwarding; ask for all data to be
     //  sent to this pipe.
-    bool icanhasall = false;
-    if (protocol == "pgm" || protocol == "epgm")
-        icanhasall = true;
+    bool icanhasall = protocol == "pgm" || protocol == "epgm";
 
-    //  Attach local end of the pipe to the socket object.
-    attach_pipe (pipes [0], icanhasall);
+    if (options.delay_attach_on_connect != 1 || icanhasall) {
+        //  Create a bi-directional pipe.
+        object_t *parents [2] = {this, session};
+        pipe_t *pipes [2] = {NULL, NULL};
+        int hwms [2] = {options.sndhwm, options.rcvhwm};
+        bool delays [2] = {options.delay_on_disconnect, options.delay_on_close};
+        rc = pipepair (parents, pipes, hwms, delays);
+        errno_assert (rc == 0);
 
-    //  Attach remote end of the pipe to the session object later on.
-    session->attach_pipe (pipes [1]);
+        //  Attach local end of the pipe to the socket object.
+        attach_pipe (pipes [0], icanhasall);
 
-    // Save last endpoint URI
+        //  Attach remote end of the pipe to the session object later on.
+        session->attach_pipe (pipes [1]);
+    }
+
+    //  Save last endpoint URI
     paddr->to_string (options.last_endpoint);
 
     add_endpoint (addr_, (own_t *) session);
@@ -820,16 +823,16 @@ int zmq::socket_base_t::process_commands (int timeout_, bool throttle_)
         rc = mailbox.recv (&cmd, 0);
     }
 
-    //  Process all the commands available at the moment.
-    while (true) {
-        if (rc == -1 && errno == EAGAIN)
-            break;
-        if (rc == -1 && errno == EINTR)
-            return -1;
-        errno_assert (rc == 0);
+    //  Process all available commands.
+    while (rc == 0) {
         cmd.destination->process_command (cmd);
         rc = mailbox.recv (&cmd, 0);
-     }
+    }
+
+    if (errno == EINTR)
+        return -1;
+
+    zmq_assert (errno == EAGAIN);
 
     if (ctx_terminated) {
         errno = ETERM;
@@ -845,6 +848,7 @@ void zmq::socket_base_t::process_stop ()
     //  We'll remember the fact so that any blocking call is interrupted and any
     //  further attempt to use the socket will return ETERM. The user is still
     //  responsible for calling zmq_close on the socket though!
+    stop_monitor ();
     ctx_terminated = true;
 }
 
@@ -874,8 +878,7 @@ void zmq::socket_base_t::process_destroy ()
     destroyed = true;
 }
 
-int zmq::socket_base_t::xsetsockopt (int option_, const void *optval_,
-    size_t optvallen_)
+int zmq::socket_base_t::xsetsockopt (int, const void *, size_t)
 {
     errno = EINVAL;
     return -1;
@@ -886,7 +889,7 @@ bool zmq::socket_base_t::xhas_out ()
     return false;
 }
 
-int zmq::socket_base_t::xsend (msg_t *msg_, int flags_)
+int zmq::socket_base_t::xsend (msg_t *, int)
 {
     errno = ENOTSUP;
     return -1;
@@ -897,22 +900,22 @@ bool zmq::socket_base_t::xhas_in ()
     return false;
 }
 
-int zmq::socket_base_t::xrecv (msg_t *msg_, int flags_)
+int zmq::socket_base_t::xrecv (msg_t *, int)
 {
     errno = ENOTSUP;
     return -1;
 }
 
-void zmq::socket_base_t::xread_activated (pipe_t *pipe_)
+void zmq::socket_base_t::xread_activated (pipe_t *)
 {
     zmq_assert (false);
 }
-void zmq::socket_base_t::xwrite_activated (pipe_t *pipe_)
+void zmq::socket_base_t::xwrite_activated (pipe_t *)
 {
     zmq_assert (false);
 }
 
-void zmq::socket_base_t::xhiccuped (pipe_t *pipe_)
+void zmq::socket_base_t::xhiccuped (pipe_t *)
 {
     zmq_assert (false);
 }
@@ -932,7 +935,7 @@ void zmq::socket_base_t::out_event ()
     zmq_assert (false);
 }
 
-void zmq::socket_base_t::timer_event (int id_)
+void zmq::socket_base_t::timer_event (int)
 {
     zmq_assert (false);
 }
@@ -968,7 +971,11 @@ void zmq::socket_base_t::write_activated (pipe_t *pipe_)
 
 void zmq::socket_base_t::hiccuped (pipe_t *pipe_)
 {
-    xhiccuped (pipe_);
+    if (options.delay_attach_on_connect == 1)
+        pipe_->terminate (false);
+    else
+        // Notify derived sockets of the hiccup
+        xhiccuped (pipe_);
 }
 
 void zmq::socket_base_t::terminated (pipe_t *pipe_)
@@ -993,15 +1000,172 @@ void zmq::socket_base_t::extract_flags (msg_t *msg_)
     rcvmore = msg_->flags () & msg_t::more ? true : false;
 }
 
-void zmq::socket_base_t::monitor_event (int event_, ...)
+int zmq::socket_base_t::monitor (const char *addr_, int events_)
 {
-    va_list args;
-    va_start (args, event_);
-    get_ctx ()->monitor_event (this, event_, args);
-    va_end (args);
+    int rc;
+    if (unlikely (ctx_terminated)) {
+        errno = ETERM;
+        return -1;
+    }
+
+    // Support deregistering monitoring endpoints as well
+    if (addr_ == NULL) {
+        stop_monitor ();
+        return 0;
+    }
+
+    //  Parse addr_ string.
+    std::string protocol;
+    std::string address;
+    rc = parse_uri (addr_, protocol, address);
+    if (rc != 0)
+        return -1;
+
+    rc = check_protocol (protocol);
+    if (rc != 0)
+        return -1;
+
+    // Event notification only supported over inproc://
+    if (protocol != "inproc") {
+        errno = EPROTONOSUPPORT;
+        return -1;
+    }
+
+    // Register events to monitor
+    monitor_events = events_;
+
+    monitor_socket = zmq_socket( get_ctx (), ZMQ_PAIR);
+    if (monitor_socket == NULL)
+        return -1;
+
+    // Never block context termination on pending event messages
+    int linger = 0;
+    rc = zmq_setsockopt (monitor_socket, ZMQ_LINGER, &linger, sizeof (linger));
+    if (rc == -1)
+         stop_monitor ();
+
+    // Spawn the monitor socket endpoint
+    rc = zmq_bind (monitor_socket, addr_);
+    if (rc == -1)
+         stop_monitor ();
+    return rc;
 }
 
-void zmq::socket_base_t::monitor_event (int event_, va_list args)
+void zmq::socket_base_t::event_connected (const char *addr_, int fd_)
 {
-	get_ctx ()->monitor_event (this, event_, args);
+    zmq_event_t event;
+    if (!(monitor_events & ZMQ_EVENT_CONNECTED)) return;
+    event.event = ZMQ_EVENT_CONNECTED;
+    event.data.connected.addr = (char *)addr_;
+    event.data.connected.fd = fd_;
+    monitor_event (event);
+}
+
+void zmq::socket_base_t::event_connect_delayed (const char *addr_, int err_)
+{
+    zmq_event_t event;
+    if (!(monitor_events & ZMQ_EVENT_CONNECT_DELAYED)) return;
+    event.event = ZMQ_EVENT_CONNECT_DELAYED;
+    event.data.connected.addr = (char *)addr_;
+    event.data.connect_delayed.err = err_;
+    monitor_event (event);
+}
+
+void zmq::socket_base_t::event_connect_retried (const char *addr_, int interval_)
+{
+    zmq_event_t event;
+    if (!(monitor_events & ZMQ_EVENT_CONNECT_RETRIED)) return;
+    event.event = ZMQ_EVENT_CONNECT_RETRIED;
+    event.data.connected.addr = (char *)addr_;
+    event.data.connect_retried.interval = interval_;
+    monitor_event (event);
+}
+
+void zmq::socket_base_t::event_listening (const char *addr_, int fd_)
+{
+    zmq_event_t event;
+    if (!(monitor_events & ZMQ_EVENT_LISTENING)) return;
+    event.event = ZMQ_EVENT_LISTENING;
+    event.data.connected.addr = (char *)addr_;
+    event.data.listening.fd = fd_;
+    monitor_event (event);
+}
+
+void zmq::socket_base_t::event_bind_failed (const char *addr_, int err_)
+{
+    zmq_event_t event;
+    if (!(monitor_events & ZMQ_EVENT_BIND_FAILED)) return;
+    event.event = ZMQ_EVENT_BIND_FAILED;
+    event.data.connected.addr = (char *)addr_;
+    event.data.bind_failed.err = err_;
+    monitor_event (event);
+}
+
+void zmq::socket_base_t::event_accepted (const char *addr_, int fd_)
+{
+    zmq_event_t event;
+    if (!(monitor_events & ZMQ_EVENT_ACCEPTED)) return;
+    event.event = ZMQ_EVENT_ACCEPTED;
+    event.data.connected.addr = (char *)addr_;
+    event.data.accepted.fd = fd_;
+    monitor_event (event);
+}
+
+void zmq::socket_base_t::event_accept_failed (const char *addr_, int err_)
+{
+    zmq_event_t event;
+    if (!(monitor_events & ZMQ_EVENT_ACCEPT_FAILED)) return;
+    event.event = ZMQ_EVENT_ACCEPT_FAILED;
+    event.data.connected.addr = (char *)addr_;
+    event.data.accept_failed.err= err_;
+    monitor_event (event);
+}
+
+void zmq::socket_base_t::event_closed (const char *addr_, int fd_)
+{
+    zmq_event_t event;
+    if (!(monitor_events & ZMQ_EVENT_CLOSED)) return;
+    event.event = ZMQ_EVENT_CLOSED;
+    event.data.connected.addr = (char *)addr_;
+    event.data.closed.fd = fd_;
+    monitor_event (event);
+}
+        
+void zmq::socket_base_t::event_close_failed (const char *addr_, int err_)
+{
+    zmq_event_t event;
+    if (!(monitor_events & ZMQ_EVENT_CLOSE_FAILED)) return;
+    event.event = ZMQ_EVENT_CLOSE_FAILED;
+    event.data.connected.addr = (char *)addr_;
+    event.data.close_failed.err = err_;
+    monitor_event (event);
+}
+
+void zmq::socket_base_t::event_disconnected (const char *addr_, int fd_)
+{
+    zmq_event_t event;
+    if (!(monitor_events & ZMQ_EVENT_DISCONNECTED)) return;
+    event.event = ZMQ_EVENT_DISCONNECTED;
+    event.data.connected.addr = (char *)addr_;
+    event.data.disconnected.fd = fd_;
+    monitor_event (event);
+}
+
+void zmq::socket_base_t::monitor_event (zmq_event_t event_)
+{
+    zmq_msg_t msg;
+    if (!monitor_socket) return;
+    zmq_msg_init_size (&msg, sizeof (event_));
+    memcpy (zmq_msg_data (&msg), &event_, sizeof (event_));
+    zmq_sendmsg (monitor_socket, &msg, 0);
+    zmq_msg_close (&msg);
+}
+
+void zmq::socket_base_t::stop_monitor()
+{
+    if (monitor_socket) {
+        zmq_close (monitor_socket);
+        monitor_socket = NULL;
+        monitor_events = 0;
+    }
 }
