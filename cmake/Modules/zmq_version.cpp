@@ -1,6 +1,6 @@
 /*
     Copyright (c) 2007-2012 iMatix Corporation
-    Copyright (c) 2011 250bpm s.r.o.
+    Copyright (c) 2009-2011 250bpm s.r.o.
     Copyright (c) 2007-2011 Other contributors as noted in the AUTHORS file
 
     This file is part of 0MQ.
@@ -19,42 +19,13 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-#include "../include/zmq.h"
-#include <string.h>
+#include "zmq.h"
 
-#undef NDEBUG
-#include <assert.h>
+#include <stdio.h>
 
-static void do_bind_and_verify (void *s, const char *endpoint)
+int main ()
 {
-    int rc = zmq_bind (s, endpoint);
-    assert (rc == 0);
-
-    char test [255];
-    size_t siz = 255;
-    rc = zmq_getsockopt (s, ZMQ_LAST_ENDPOINT, test, &siz);
-    assert (rc == 0 && strcmp (test, endpoint) == 0);
-}
-
-int main (void)
-{
-    //  Create the infrastructure
-    void *ctx = zmq_init (1);
-    assert (ctx);
-
-    void *sb = zmq_socket (ctx, ZMQ_ROUTER);
-    assert (sb);
-
-    do_bind_and_verify (sb, "tcp://127.0.0.1:5560");
-    do_bind_and_verify (sb, "tcp://127.0.0.1:5561");
-    do_bind_and_verify (sb, "ipc:///tmp/testep");
-
-    int rc = zmq_close (sb);
-    assert (rc == 0);
-    
-    rc = zmq_term (ctx);
-    assert (rc == 0);
-
+    printf ("%d.%d.%d\n", ZMQ_VERSION_MAJOR, ZMQ_VERSION_MINOR, ZMQ_VERSION_PATCH);
     return 0;
 }
 

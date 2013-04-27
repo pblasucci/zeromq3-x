@@ -50,10 +50,10 @@
 
 zmq::stream_engine_t::stream_engine_t (fd_t fd_, const options_t &options_, const std::string &endpoint_) :
     s (fd_),
+    io_enabled (false),
     inpos (NULL),
     insize (0),
     decoder (NULL),
-    input_error (false),
     outpos (NULL),
     outsize (0),
     encoder (NULL),
@@ -63,6 +63,7 @@ zmq::stream_engine_t::stream_engine_t (fd_t fd_, const options_t &options_, cons
     options (options_),
     endpoint (endpoint_),
     plugged (false),
+    terminating (false),
     socket (NULL)
 {
     //  Put the socket into non-blocking mode.
@@ -132,6 +133,7 @@ void zmq::stream_engine_t::plug (io_thread_t *io_thread_,
     //  Connect to I/O threads poller object.
     io_object_t::plug (io_thread_);
     handle = add_fd (s);
+    io_enabled = true;
 
     //  Send the 'length' and 'flags' fields of the identity message.
     //  The 'length' field is encoded in the long format.
@@ -153,7 +155,10 @@ void zmq::stream_engine_t::unplug ()
     plugged = false;
 
     //  Cancel all fd subscriptions.
-    rm_fd (handle);
+    if (io_enabled) {
+        rm_fd (handle);
+        io_enabled = false;
+    }
 
     //  Disconnect from I/O threads poller object.
     io_object_t::unplug ();
@@ -168,6 +173,11 @@ void zmq::stream_engine_t::unplug ()
 
 void zmq::stream_engine_t::terminate ()
 {
+    if (!terminating && encoder && encoder->has_data ()) {
+        //  Give io_thread a chance to send in the buffer
+        terminating = true;
+        return;
+    }
     unplug ();
     delete this;
 }
@@ -225,9 +235,10 @@ void zmq::stream_engine_t::in_event ()
     //  waiting for input events and postpone the termination
     //  until after the session has accepted the message.
     if (disconnection) {
-        input_error = true;
-        if (decoder->stalled ())
-            reset_pollin (handle);
+        if (decoder->stalled ()) {
+            rm_fd (handle);
+            io_enabled = false;
+        }
         else
             error ();
     }
@@ -238,8 +249,15 @@ void zmq::stream_engine_t::out_event ()
     //  If write buffer is empty, try to read new data from the encoder.
     if (!outsize) {
 
+        //  Even when we stop polling as soon as there is no
+        //  data to send, the poller may invoke out_event one
+        //  more time due to 'speculative write' optimisation.
+        if (unlikely (encoder == NULL)) {
+            zmq_assert (handshaking);
+            return;
+        }
+
         outpos = NULL;
-        zmq_assert (encoder);
         encoder->get_data (&outpos, &outsize);
 
         //  If there is no data to send, stop polling for output.
@@ -261,6 +279,8 @@ void zmq::stream_engine_t::out_event ()
     //  this is necessary to prevent losing incomming messages.
     if (nbytes == -1) {
         reset_pollout (handle);
+        if (unlikely (terminating))
+            terminate ();
         return;
     }
 
@@ -272,6 +292,10 @@ void zmq::stream_engine_t::out_event ()
     if (unlikely (handshaking))
         if (outsize == 0)
             reset_pollout (handle);
+
+    if (unlikely (terminating))
+        if (outsize == 0)
+            terminate ();
 }
 
 void zmq::stream_engine_t::activate_out ()
@@ -287,7 +311,7 @@ void zmq::stream_engine_t::activate_out ()
 
 void zmq::stream_engine_t::activate_in ()
 {
-    if (input_error) {
+    if (unlikely (!io_enabled)) {
         //  There was an input error but the engine could not
         //  be terminated (due to the stalled decoder).
         //  Flush the pending message and terminate the engine now.
@@ -447,7 +471,7 @@ int zmq::stream_engine_t::push_msg (msg_t *msg_)
 void zmq::stream_engine_t::error ()
 {
     zmq_assert (session);
-    socket->event_disconnected (endpoint.c_str(), s);
+    socket->event_disconnected (endpoint, s);
     session->detach ();
     unplug ();
     delete this;
